@@ -33,78 +33,150 @@ read_file1,read_file2 are paired end reads
 read_file3 are single end reads
 ';
 
-my $input = shift || die $usage;
+my $input_list = shift || die $usage;
 my $genome = shift || die $usage;
-my $comparison = shift || die $usage;
+my $comparison_file = shift || die $usage;
+
 #################################################################
 # init parameters and vars					#
 #################################################################
+my $ref_SNP_enable = 1;
+my $reSeqPrint = 1;
 
 my $debug = 1;
 my $cpu = 24;
 my $add_pileup = 1;
 
-
 #################################################################
 # load comparison file to hash					#
+# hash $cultivar						#
+# key: cultivar name; value: 1					#
+# hash $comparison						#
+# key: cultivarA \t cultivarB; value: 1				#
+#								#
+# check cultivars exist in comparison file			#
 #################################################################
-
+my ($cultivar, $comparison) = load_comparison($comparison_file);
+my $error = check_comparison($input_list, $cultivar); die if $error;
 
 #################################################################
 # check if the genome is indexed by bwa				#
 # check if the genome is indexed by samtools faidx		#
-# generate chrOrder file					#
+# generate chrOrder file base one genome sequences		#
 #################################################################
-my $chrOrder = check_genome($genome);
 my $chrOrder_file = "chrOrder";
-save_chrOrder($chrOrder, $chrOrder_file);
-
+check_genome($genome, $chrOrder_file);
 
 #################################################################
 # generate command to produce pileup files 			#
 #################################################################
-my (%cmd_pileup, $cmd_add_pileup) = generate_pileup($list, $genome, $cpu, $debug, $add_pileup);
+my (%cmd_pileup) = generate_pileup($input_list, $genome, $cpu, $debug);
+
+foreach my $cul (sort keys %cmd_pileup) { print $cmd_pileup{$cul}; }
 
 #################################################################
-# perform analysis						#
-################################################################# 
-
-if (-s $comparison)
+# perform comparison analysis					#
+#################################################################
+if (-s $comparison_file)
 {
-	#########################################################
-	# checking comparison file to see if the sample exist	#
-	#########################################################
-	my $cmd_comparison;
-	my $fh = IO::File->new($comparison) || die "Can not open comparison file $comparison $!\n";
-	while(<$fh>)
+	foreach my $comparison (sort keys %$comparison)
 	{
-		chomp;
-		my @a = split(/\t/, $_);
-		unless (scalar(@a) == 2) { die "Error 1 in comparion file: sample number $_\n"; }
-		if ( defined $$cmd_pileup{$a[0]} &&  defined $$cmd_pileup{$a[1]} ) {} 
-		else { die "Error 2 in comparion file: sample name $_\n";}
+		my ($cultivarA, $cultivarB) = split(/\t/, $comparison);
+		my ($pileupA, $pileupB) = ($cultivarA.".pileup", $cultivarB.".pileup");
+		my $cmd_combine2PileFiles = "combine2PileFiles $pileupA $pileupB 0.9 0.8 $chrOrder_file 3";
+		print $cmd_combine2PileFiles."\n";
+		#system($cmd_combine2PileFiles) && die "Error in command: $cmd_combine2PileFiles\n";
 	}
-	$fh->close;
-
-	#########################################################
-	# perform comparison analysis				#
-	#########################################################
-	
-	
 }
 
-
-if ()
+#################################################################
+# call SNPs between cultivar and reference			#
+#################################################################
+if ($ref_SNP_enable)
 {
-
+	foreach my $cultivar (sort keys %cmd_pileup)
+	{
+		my $pileup = $cultivar.".pileup";
+		my $cmd_pileupFilter = "pileupFilter.AtoG 0.9 0.8 3 $pileup";
+		print $cmd_pileupFilter."\n";
+		#system($cmd_pileupFilter) && die "Error in command: $cmd_pileupFilter\n";
+	}
 }
 
-if ($reSeqPrintSample)
-
+#################################################################
+# reSeqPrintSample virtual genome using SNP			#
+#################################################################
+if ($reSeqPrint)
+{
+	foreach my $cultivar (sort keys %cmd_pileup)
+	{
+		my $pileup = $cultivar.".pileup";
+		my $col = $cultivar.".1col";
+		my $cmd_reSeqPrint = "reSeqPrintSample.indel.fast.strAssign.RNAseq.table $genome $col $pileup $cultivar 3 3 0.3";
+		print $cmd_reSeqPrint."\n";
+		#system($cmd_reSeqPrint) && die "Error in command: $cmd_reSeqPrint\n";
+	}
+}
 
 #################################################################
 # kentnf: subroutine						#
 #################################################################
+=head1 load_comparison
+
+ load comparison and cultivar information to hash
+
+=cut
+sub load_comparison
+{
+	my $comparison_file = shift;
+	my %comparison; my %cultivar;
+	my $fh = IO::File->new($comparison_file) || die "Can not open comparison file $comparison_file $!\n";
+	while(<$fh>)
+	{
+		chomp; 
+		my @a = split(/\t/, $_);
+		if ($_ =~ m/^#/) { next; }
+		if (scalar(@a) != 2) { next; }
+		$comparison{$_} = 1;
+		$cultivar{$a[0]} = 1;
+		$cultivar{$a[1]} = 1;
+	}
+	$fh->close;
+	return (\%cultivar, \%comparison);
+}
+
+=head1 check_comparison
+
+ check if the cultivars are consistent in comparison_file and input_list file
+
+=cut
+sub check_comparison
+{
+	my ($list_file, $cultivar) = @_;
+
+	my %list_cultivar;
+	my $fh = IO::File->new($list_file) || die "Can not open list file $list_file $!\n";
+	while(<$fh>)
+	{
+		chomp;
+		my @a = split(/\t/, $_);
+		if ($_ =~ m/^#/) { next; }
+		$list_cultivar{$a[0]} = 1;
+	}
+	$fh->close;
+
+	my $error = 0;
+	foreach my $cul (sort keys %$cultivar)
+	{
+		unless ( defined $list_cultivar{$cul} ) {   
+			print "cultivar $cul in comparison file do not exist in list_file\n"; 
+			$error = 1;
+		}
+	}
+	return $error;
+}
+
+
 
 =head1 check_genome
 
@@ -114,28 +186,31 @@ if ($reSeqPrintSample)
 =cut
 sub check_genome
 {
-	my $genome = shift;
+	my ($genome, $chrOrder_file) = @_;
 	my @files = ($genome.".amb", $genome.".ann", $genome.".bwt", $genome.".pac", $genome.".sa", $genome.".fai");
 	foreach my $file (@files) 
 	{
-		if (-s $file) { die "Error, please create genome index using bwa and samtools\n"; }
+		unless (-s $file) { die "Error, please create genome index using bwa and samtools\n$file\n"; }
 	}
 	
-	my $chrOrder;
+	my $out = IO::File->new(">".$chrOrder_file) || die "Can not open chr Order file $chrOrder_file $!\n";
 	my $fh = IO::File->new($genome) || die "Can not open genome file $genome $!\n";
 	while(<$fh>)
 	{
 		chomp;
 		if ($_ =~ m/^>/) 
 		{
-			$chr = $_;
+			my $chr = $_;
 			$chr =~ s/ .*//ig;
-			$chrOrder.=$chr."\n";
+			print $out $chr."\n";
+		}
+		else
+		{
+			next;
 		}
 	}
 	$fh->close;
-
-	return $chrOrder;
+	$out->close;
 }
 
 =head1 generate_pileup
@@ -145,15 +220,16 @@ sub check_genome
 =cut
 sub generate_pileup
 {
-	my ($list, $genome, $cpu, $debug) = @_;
+	my ($list_file, $genome, $cpu, $debug) = @_;
 
 	my %cmd_pileup;
 
-	my $fh = IO::File->new($list) || die "Can not open input file: $list $!\n";
+	my $fh = IO::File->new($list_file) || die "Can not open input file: $list_file $!\n";
 	while(<$fh>)
 	{
 		chomp;
 		my @a = split(/\t/, $_);
+		if ($_ =~ m/^#/) { next; }
 		my $sample_name = $a[0];
 		my $pileup_cmds = "";
 
@@ -161,6 +237,7 @@ sub generate_pileup
 		my @reads;
 
 		# perform bwa alignment, generate sam, convert bam, sort, put it to hash
+		my ($bam, $sort, $sort_bam);
 		for(my $i=1; $i<@a; $i++)
 		{
 			@reads = split(/,/, $a[$i]);
@@ -234,18 +311,9 @@ sub generate_pileup
 		my $mpileup_cmd = "samtools mpileup -q 16 -Q 0 -d 10000 -f $genome $all_bam > $all_pileup";
 		$pileup_cmds.=$mpileup_cmd."\n";
 
-		# reprint
-		# my $all_1col = $sample_name.".1col";	
-		# my $print_sample_cmd = "reSeqPrintSample.indel.fast $genmoe $all_1col $all_pileup $sample_name 2 2 0.3";
-		# print $print_sample_cmd."\n" if $debug;
-		# system($print_sample_cmd) && die "Error in command $print_sample_cmd\n";
-
 		$cmd_pileup{$sample_name} = $pileup_cmds;
 	}
 	$fh->close;
 
 	return %cmd_pileup;
 }
-
-
-
