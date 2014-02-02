@@ -12,8 +12,11 @@
  Filter SAM file: Honghe Sun
  perl script: Yi Zheng
 
- 07/04/2013
- 
+ 02/01/2014 parameter for remove multi-hit reads
+ 01/22/2014 fix bug for merge just one file, chrOrder 
+ 07/04/2013 init
+  
+
 =cut
 
 use strict;
@@ -23,19 +26,23 @@ use IO::File;
 use Getopt::Long;
 
 my $usage = qq'
-Perl MaoSNP_pipeline.pl input_RNA_seq reference
+Perl MaoSNP_pipeline.pl input_RNA_seq reference comparison_file[option]
 
 * example of input RNASeq
-sampleName	read_file1,read_file2	read_file3
+sampleName \t read_file1,read_file2 \t read_file3 ..... read_fileN
 
 sampleName must diff with any read file name
 read_file1,read_file2 are paired end reads
 read_file3 are single end reads
+
+* example of comparison_file
+sampleNameA \t sampleNameB
+
 ';
 
 my $input_list = shift || die $usage;
 my $genome = shift || die $usage;
-my $comparison_file = shift || die $usage;
+my $comparison_file = shift;
 
 #################################################################
 # init parameters and vars					#
@@ -83,7 +90,8 @@ if (-s $comparison_file)
 	{
 		my ($cultivarA, $cultivarB) = split(/\t/, $comparison);
 		my ($pileupA, $pileupB) = ($cultivarA.".pileup", $cultivarB.".pileup");
-		my $cmd_combine2PileFiles = "combine2PileFiles $pileupA $pileupB 0.9 0.8 $chrOrder_file 3";
+		my $script = ${FindBin::RealBin}."/combine2PileFiles";
+		my $cmd_combine2PileFiles = "$script $pileupA $pileupB 0.9 0.8 $chrOrder_file 3";
 		print $cmd_combine2PileFiles."\n";
 		#system($cmd_combine2PileFiles) && die "Error in command: $cmd_combine2PileFiles\n";
 	}
@@ -97,7 +105,8 @@ if ($ref_SNP_enable)
 	foreach my $cultivar (sort keys %cmd_pileup)
 	{
 		my $pileup = $cultivar.".pileup";
-		my $cmd_pileupFilter = "pileupFilter.AtoG 0.9 0.8 3 $pileup";
+		my $script = ${FindBin::RealBin}."/pileupFilter.AtoG";
+		my $cmd_pileupFilter = "$script 0.9 0.8 3 $pileup";
 		print $cmd_pileupFilter."\n";
 		#system($cmd_pileupFilter) && die "Error in command: $cmd_pileupFilter\n";
 	}
@@ -112,7 +121,8 @@ if ($reSeqPrint)
 	{
 		my $pileup = $cultivar.".pileup";
 		my $col = $cultivar.".1col";
-		my $cmd_reSeqPrint = "reSeqPrintSample.indel.fast.strAssign.RNAseq.table $genome $col $pileup $cultivar 3 3 0.3";
+		my $script = ${FindBin::RealBin}."/reSeqPrintSample.indel.fast.strAssign.RNAseq.table";
+		my $cmd_reSeqPrint = "$script $genome $col $pileup $cultivar 3 3 0.3";
 		print $cmd_reSeqPrint."\n";
 		#system($cmd_reSeqPrint) && die "Error in command: $cmd_reSeqPrint\n";
 	}
@@ -176,8 +186,6 @@ sub check_comparison
 	return $error;
 }
 
-
-
 =head1 check_genome
 
  check if the genome is indexed by bwa
@@ -201,6 +209,7 @@ sub check_genome
 		if ($_ =~ m/^>/) 
 		{
 			my $chr = $_;
+			$chr =~ s/^>//;
 			$chr =~ s/ .*//ig;
 			print $out $chr."\n";
 		}
@@ -304,7 +313,10 @@ sub generate_pileup
 		my $all_bam = $sample_name.".bam";
 		my $s_bam = join(" ", @sort_bam);
 		my $sam_merge_cmd = "samtools merge -f $all_bam $s_bam";
+		if (scalar(@sort_bam) == 1) { $sam_merge_cmd = "mv $s_bam $all_bam"; }
 		$pileup_cmds.=$sam_merge_cmd."\n";
+
+		# remove multi-hit reads
 
 		# pileup all files
 		my $all_pileup = $sample_name.".pileup";
@@ -317,3 +329,44 @@ sub generate_pileup
 
 	return %cmd_pileup;
 }
+
+sub pipeline
+{
+print qq'
+1. remove redundancy reads using removeRedundancy.pl
+
+perl removeRedundancy.pl input > output
+
+2. align each sample to reference using bwa
+
+# bwa align for cezanne
+bwa aln -t 24 -n 0.02 -o 1 -e 2 -f sample1.sai reference.fa sample1.fa
+bwa samse reference.fa sample1.sai sample1.fa | filter_for_SEsnp.pl | samtools view -bS -o sample1.bam -
+samtools sort sample1.bam sample1_sort
+
+3. merge sorted bam files for each cultivar
+samtools merge -f cultivar_A.bam sample1_sort.bam sample2_sort.bam ...... sampleN_sort.bam
+
+4. generate pileup files for each cultivar
+samtools mpileup -q 16 -Q 0 -d 10000 -f reference.fa cultivar_A.bam > cultivar_A.pileup
+
+* choose one or more below step for next analysis.
+
+5. generate virtual genome using SNP.
+reSeqPrintSample.indel.fast.strAssign.RNAseq.table reference.fa cultivar_A.1col cultivar_A.pileup cultivar_A 3 3 0.3
+
+6. call SNPs between cultivar and reference
+pileupFilter.AtoG 0.9 0.8 3 cultivar_A.pileup
+
+7. call SNPs between two cultivars
+combine2PileFiles cultivar_A.pileup cultivar_B.pileup  0.9  0.8  ChrOrder  3
+
+* the ChrOrder is the Chr ID, one ID per line.
+
+';
+
+}
+
+
+
+
