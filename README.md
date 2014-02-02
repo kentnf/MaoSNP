@@ -21,7 +21,7 @@ Pipeline For SNP analysis
     * list file for comparison
     cultivarA cultivarB
 
-### E. Run Map SNP pipeline
+### E. Run Mao SNP pipeline
 
     $MaoSNP_pipeline.pl list_file  comparison_file > run_cmd.sh
 
